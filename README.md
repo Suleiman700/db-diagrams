@@ -77,3 +77,26 @@ Table Posts {
   created_at timestamp
 }
 ```
+
+```plaintext
+Table Products {
+  id int [pk]
+  name varchar(100)
+  description text [note: 'Detailed product description']
+  price decimal(10,2)
+  stock_quantity int
+  category varchar(50)
+  is_active boolean
+  created_at timestamp
+}
+
+Table Orders {
+  id int [pk]
+  product_id int [ref: > Products.id]
+  quantity int [note: 'Number of items ordered']
+  total_price decimal(10,2)
+  status varchar(20)
+  shipping_address text
+  created_at timestamp
+}
+```

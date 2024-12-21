@@ -2,6 +2,12 @@
 
 An interactive database diagram tool for visualizing and managing SQL table relationships. Create, edit, and export database schemas with an intuitive drag-and-drop interface.
 
+![chrome_GF5XhX2rj7](https://github.com/user-attachments/assets/749e3907-98e0-425b-bda1-8079c1e8aa5a)
+
+![chrome_jW4mrgPwWg](https://github.com/user-attachments/assets/46d44111-024b-434a-9fd3-c3be95af9114)
+
+https://github.com/user-attachments/assets/20a4a891-7279-484e-a603-db7a930cd62a
+
 ## ✨ Features
 
 ### 📊 Table Management

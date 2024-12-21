@@ -2,6 +2,7 @@ class TableDiagram {
     constructor() {
         this.codeEditor = document.getElementById('codeEditor');
         this.diagram = document.getElementById('diagram');
+        this.storage = new LocalStorage();
         this.tables = new Map();
         this.relationships = [];
         this.lines = [];
@@ -14,6 +15,99 @@ class TableDiagram {
         this.lastY = 0;
         this.canvasX = 0;
         this.canvasY = 0;
+        this.lockedTables = new Set();
+
+        // Load locked tables state
+        const savedLocks = this.storage.getItem('lockedTables');
+        if (savedLocks) {
+            this.lockedTables = new Set(savedLocks);
+        }
+
+        // Initialize undo/redo functionality
+        this.history = [];
+        this.currentHistoryIndex = -1;
+        this.maxHistorySize = 100;
+        this.undoBtn = document.getElementById('undoBtn');
+        this.redoBtn = document.getElementById('redoBtn');
+        this.historyStatus = document.getElementById('historyStatus');
+        
+        // Initialize buttons
+        this.undoBtn.addEventListener('click', () => this.undo());
+        this.redoBtn.addEventListener('click', () => this.redo());
+        
+        // Add keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+                e.preventDefault();
+                this.undo();
+            } else if (e.ctrlKey && e.key === 'y' || (e.ctrlKey && e.shiftKey && e.key === 'Z')) {
+                e.preventDefault();
+                this.redo();
+            }
+        });
+
+        // Check for saved diagram
+        const savedData = this.storage.getItem('diagram');
+        if (savedData?.content) {
+            Swal.fire({
+                title: '<span class="text-xl font-bold">Restore Your Work</span>',
+                html: `
+                    <div class="p-4">
+                        <i class="fas fa-file-code text-4xl text-blue-500 mb-4"></i>
+                        <p class="text-gray-600 mt-2">We found a previously saved diagram.</p>
+                        <p class="text-gray-600">Would you like to continue where you left off?</p>
+                    </div>
+                `,
+                icon: null,
+                showCancelButton: true,
+                confirmButtonColor: '#3b82f6',
+                cancelButtonColor: '#64748b',
+                confirmButtonText: '<i class="fas fa-check mr-2"></i>Yes, restore it',
+                cancelButtonText: '<i class="fas fa-times mr-2"></i>No, start fresh',
+                customClass: {
+                    popup: 'rounded-lg shadow-xl',
+                    confirmButton: 'px-6 py-3 rounded-lg font-semibold',
+                    cancelButton: 'px-6 py-3 rounded-lg font-semibold'
+                },
+                buttonsStyling: true,
+                showClass: {
+                    popup: 'animate__animated animate__fadeIn animate__faster'
+                },
+                hideClass: {
+                    popup: 'animate__animated animate__fadeOut animate__faster'
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    this.codeEditor.value = savedData.content;
+                    if (savedData.positions) {
+                        this.tablePositions = new Map(Object.entries(savedData.positions));
+                    }
+                    this.generateDiagram();
+                    
+                    Swal.fire({
+                        title: '<span class="text-xl font-bold">Success!</span>',
+                        html: `
+                            <div class="p-4">
+                                <i class="fas fa-check-circle text-4xl text-green-500 mb-4"></i>
+                                <p class="text-gray-600">Your diagram has been restored.</p>
+                            </div>
+                        `,
+                        icon: null,
+                        timer: 1500,
+                        showConfirmButton: false,
+                        customClass: {
+                            popup: 'rounded-lg shadow-xl'
+                        },
+                        showClass: {
+                            popup: 'animate__animated animate__fadeIn animate__faster'
+                        },
+                        hideClass: {
+                            popup: 'animate__animated animate__fadeOut animate__faster'
+                        }
+                    });
+                }
+            });
+        }
 
         // Initialize zoom controls
         this.initZoomControls();
@@ -27,12 +121,29 @@ class TableDiagram {
         // Handle LeaderLine container
         this.setupLeaderLineContainer();
 
+        // Add click handler to clear highlights when clicking outside tables
+        this.diagram.addEventListener('click', (e) => {
+            // Only clear if clicking directly on the diagram container, not on tables
+            if (e.target === this.diagram) {
+                this.clearHighlights();
+                // Remove any highlight classes
+                document.querySelectorAll('.highlight').forEach(el => {
+                    el.classList.remove('highlight', 'bg-blue-100');
+                });
+            }
+        });
+
         // Add input event for real-time updates
         this.codeEditor.addEventListener('input', () => {
             if (this.updateTimeout) {
                 clearTimeout(this.updateTimeout);
             }
             this.updateTimeout = setTimeout(() => {
+                this.addToHistory('text');
+                this.storage.setItem('diagram', {
+                    content: this.codeEditor.value,
+                    positions: Object.fromEntries(this.tablePositions)
+                });
                 this.generateDiagram();
             }, 300);
         });
@@ -92,7 +203,7 @@ class TableDiagram {
                 const x = startX;
                 const y = startY + (index * (tableEl.offsetHeight + padding));
                 tableEl.style.transform = `translate(${x}px, ${y}px)`;
-                this.tablePositions.set(tableName, { x, y });
+                this.saveTablePosition(tableName, x, y);
             }
         });
 
@@ -414,14 +525,61 @@ class TableDiagram {
         const header = document.createElement('div');
         header.className = 'font-bold text-lg mb-2 bg-gray-100 p-2 rounded flex justify-between items-center';
         
+        const titleContainer = document.createElement('div');
+        titleContainer.className = 'flex items-center gap-2';
+
+        // Add dropdown menu
+        const dropdownContainer = document.createElement('div');
+        dropdownContainer.className = 'relative';
+        
+        const dropdownButton = document.createElement('button');
+        dropdownButton.className = 'text-white hover:text-gray-400 focus:outline-none';
+        dropdownButton.innerHTML = '<i class="fas fa-ellipsis-v"></i>';
+        
+        const dropdownMenu = document.createElement('div');
+        dropdownMenu.className = 'absolute left-0 mt-2 bg-white rounded-lg shadow-lg py-1 z-50 hidden min-w-[120px] text-sm text-gray-700';
+        
+        const lockOption = document.createElement('button');
+        lockOption.className = 'w-full text-left px-4 py-2 hover:bg-gray-100 flex items-center';
+        this.updateLockOption(lockOption, tableName);
+        
+        dropdownMenu.appendChild(lockOption);
+        dropdownContainer.appendChild(dropdownButton);
+        dropdownContainer.appendChild(dropdownMenu);
+        
+        // Add click handler for dropdown
+        dropdownButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const wasHidden = dropdownMenu.classList.contains('hidden');
+            // Hide all other dropdowns
+            document.querySelectorAll('.absolute.left-0.mt-2').forEach(menu => 
+                menu.classList.add('hidden')
+            );
+            dropdownMenu.classList.toggle('hidden', !wasHidden);
+        });
+        
+        // Close dropdown when clicking outside
+        document.addEventListener('click', () => {
+            dropdownMenu.classList.add('hidden');
+        });
+
         const title = document.createElement('span');
         title.textContent = tableName;
+        
+        // Add lock icon (hidden by default)
+        const lockIcon = document.createElement('i');
+        lockIcon.className = 'fas fa-lock text-gray-400 hidden';
+        lockIcon.id = `lock-${tableName}`;
+
+        titleContainer.appendChild(dropdownContainer);
+        titleContainer.appendChild(title);
+        titleContainer.appendChild(lockIcon);
         
         const count = document.createElement('span');
         count.className = 'text-xs bg-indigo-600 text-white px-2 py-1 rounded-full';
         count.textContent = `${fields.length} fields`;
         
-        header.appendChild(title);
+        header.appendChild(titleContainer);
         header.appendChild(count);
         table.appendChild(header);
         
@@ -534,7 +692,7 @@ class TableDiagram {
                 // Add tooltip functionality
                 fieldDiv.addEventListener('mouseenter', () => {
                     const tooltip = document.createElement('div');
-                    tooltip.className = 'tooltip absolute bg-gray-800 text-white px-3 py-2 rounded text-sm';
+                    tooltip.className = 'tooltip absolute bg-gray-800 text-white p-2 rounded shadow-lg text-sm';
                     tooltip.textContent = field.note;
                     tooltip.style.left = '100%';
                     // tooltip.style.top = '50%';
@@ -581,7 +739,16 @@ class TableDiagram {
     }
 
     saveTablePosition(tableName, x, y) {
-        this.tablePositions.set(tableName, { x, y });
+        const oldPosition = this.tablePositions.get(tableName);
+        // Only save if position actually changed
+        if (!oldPosition || oldPosition.x !== x || oldPosition.y !== y) {
+            this.tablePositions.set(tableName, { x, y });
+            // Save to storage when table positions change
+            this.storage.setItem('diagram', {
+                content: this.codeEditor.value,
+                positions: Object.fromEntries(this.tablePositions)
+            });
+        }
     }
 
     getTablePosition(tableName) {
@@ -589,16 +756,7 @@ class TableDiagram {
     }
 
     generateDiagram() {
-        // Store current positions before clearing
-        const currentTables = document.querySelectorAll('[id^="table-"]');
-        currentTables.forEach(table => {
-            const tableName = table.id.replace('table-', '');
-            this.saveTablePosition(tableName, 
-                parseInt(table.style.left) || 0,
-                parseInt(table.style.top) || 0
-            );
-        });
-
+        // Clear the diagram
         this.diagram.innerHTML = '';
         this.lines.forEach(line => line.remove());
         this.lines = [];
@@ -614,14 +772,14 @@ class TableDiagram {
             const tableEl = this.createTableElement(tableName, fields);
             
             // Use stored position or default to grid layout
-            const pos = this.getTablePosition(tableName);
+            const pos = this.tablePositions.get(tableName);
             if (pos) {
                 tableEl.style.left = pos.x + 'px';
                 tableEl.style.top = pos.y + 'px';
             } else {
                 tableEl.style.left = offsetX + 'px';
                 tableEl.style.top = offsetY + 'px';
-                this.saveTablePosition(tableName, offsetX, offsetY);
+                this.tablePositions.set(tableName, { x: offsetX, y: offsetY });
                 
                 offsetX += 300;
                 if (offsetX > 900) {
@@ -642,15 +800,21 @@ class TableDiagram {
         let currentY;
         let initialX;
         let initialY;
+        let startX;
+        let startY;
         const tableName = tableEl.id.replace('table-', '');
         
         tableEl.addEventListener('mousedown', (e) => {
-            // Only allow dragging from the header
+            // Only allow dragging from the header and if table is not locked
             const header = e.target.closest('.bg-gray-100');
-            if (header) {
+            if (header && !this.lockedTables.has(tableName)) {
                 isDragging = true;
-                initialX = e.clientX - tableEl.offsetLeft;
-                initialY = e.clientY - tableEl.offsetTop;
+                startX = parseInt(tableEl.style.left) || 0;
+                startY = parseInt(tableEl.style.top) || 0;
+                initialX = e.clientX - startX;
+                initialY = e.clientY - startY;
+                // Remove animation class during drag
+                tableEl.classList.remove('table-animated');
             }
         });
         
@@ -663,15 +827,23 @@ class TableDiagram {
                 tableEl.style.left = currentX + 'px';
                 tableEl.style.top = currentY + 'px';
                 
-                // Save the new position
-                this.saveTablePosition(tableName, currentX, currentY);
-                
                 this.drawRelationships();
             }
         });
 
         document.addEventListener('mouseup', () => {
-            isDragging = false;
+            if (isDragging) {
+                isDragging = false;
+                // Only add to history if the position actually changed
+                if (startX !== currentX || startY !== currentY) {
+                    this.tablePositions.set(tableName, { x: currentX, y: currentY });
+                    this.addToHistory('move');
+                    this.storage.setItem('diagram', {
+                        content: this.codeEditor.value,
+                        positions: Object.fromEntries(this.tablePositions)
+                    });
+                }
+            }
         });
     }
 
@@ -854,7 +1026,7 @@ class TableDiagram {
                 const toCenter = toTableRect.left + toTableRect.width/2;
                 
                 let startSocket, endSocket;
-                let startAnchor, endAnchor;
+                let startAnchor, endAnchor;                
                 
                 if (fromCenter < toCenter) {
                     // From table is on the left
@@ -868,10 +1040,11 @@ class TableDiagram {
                         x: '0%',
                         y: (toFieldRelativeY / toTableRect.height) * 100 + '%'
                     });
-                } else {
+                }
+                else {                    
                     // From table is on the right
                     startSocket = 'left';
-                    endSocket = 'right';
+                    endSocket = 'right';                    
                     startAnchor = LeaderLine.pointAnchor(fromTable, {
                         x: '0%',
                         y: (fromFieldRelativeY / fromTableRect.height) * 100 + '%'
@@ -892,12 +1065,166 @@ class TableDiagram {
                         endPlug: rel.type === '>' ? 'arrow1' : 'disc',
                         path: 'grid',
                         startSocket,
-                        endSocket
+                        endSocket,
                     }
                 );
                 this.lines.push(line);
             }
         });
+    }
+
+    addToHistory(action) {
+        // Get current state
+        const currentState = {
+            content: this.codeEditor.value,
+            positions: new Map(Array.from(this.tablePositions.entries())),
+            action: action
+        };
+
+        // Don't add if nothing changed
+        if (this.history.length > 0) {
+            const lastState = this.history[this.currentHistoryIndex];
+            if (lastState && 
+                lastState.content === currentState.content && 
+                JSON.stringify(Array.from(lastState.positions.entries())) === 
+                JSON.stringify(Array.from(currentState.positions.entries()))) {
+                return;
+            }
+        }
+
+        // Remove any future history if we're not at the latest point
+        if (this.currentHistoryIndex < this.history.length - 1) {
+            this.history = this.history.slice(0, this.currentHistoryIndex + 1);
+        }
+
+        // Add current state to history
+        this.history.push(currentState);
+        this.currentHistoryIndex++;
+
+        // Keep history size in check
+        if (this.history.length > this.maxHistorySize) {
+            this.history.shift();
+            this.currentHistoryIndex--;
+        }
+
+        this.updateUndoRedoButtons();
+    }
+
+    undo() {
+        if (this.currentHistoryIndex > 0) {
+            this.currentHistoryIndex--;
+            this.applyHistoryState(this.history[this.currentHistoryIndex]);
+        }
+    }
+
+    redo() {
+        if (this.currentHistoryIndex < this.history.length - 1) {
+            this.currentHistoryIndex++;
+            this.applyHistoryState(this.history[this.currentHistoryIndex]);
+        }
+    }
+
+    applyHistoryState(state) {
+        if (!state) return;
+
+        const prevPositions = new Map(this.tablePositions);
+        const prevContent = this.codeEditor.value;
+
+        // Apply the text content
+        this.codeEditor.value = state.content;
+        
+        // Apply the table positions
+        this.tablePositions = new Map(state.positions);
+        
+        // Update storage
+        this.storage.setItem('diagram', {
+            content: state.content,
+            positions: Object.fromEntries(state.positions)
+        });
+
+        // Regenerate the diagram with new positions
+        this.generateDiagram();
+        
+        // Highlight changes
+        if (state.action === 'move') {
+            // Find which tables changed position
+            this.tablePositions.forEach((pos, tableName) => {
+                const prevPos = prevPositions.get(tableName);
+                if (!prevPos || prevPos.x !== pos.x || prevPos.y !== pos.y) {
+                    const tableEl = document.getElementById(`table-${tableName}`);
+                    if (tableEl) {
+                        // Add animation class for smooth movement
+                        tableEl.classList.add('table-animated');
+                        // Add highlight effect
+                        tableEl.classList.remove('table-highlight');
+                        void tableEl.offsetWidth;
+                        tableEl.classList.add('table-highlight');
+                        // Remove animation class after transition
+                        setTimeout(() => {
+                            tableEl.classList.remove('table-animated');
+                        }, 300);
+                    }
+                }
+            });
+        } else {
+            // Text change animation
+            if (prevContent !== state.content) {
+                this.codeEditor.classList.remove('text-highlight');
+                void this.codeEditor.offsetWidth;
+                this.codeEditor.classList.add('text-highlight');
+            }
+        }
+
+        this.updateUndoRedoButtons();
+    }
+
+    updateUndoRedoButtons() {
+        this.undoBtn.disabled = this.currentHistoryIndex <= 0;
+        this.redoBtn.disabled = this.currentHistoryIndex >= this.history.length - 1;
+        
+        // Update status text
+        if (this.history.length === 0) {
+            this.historyStatus.textContent = 'No changes';
+        } else {
+            const action = this.history[this.currentHistoryIndex]?.action === 'move' ? 'Move' : 'Edit';
+            this.historyStatus.textContent = `${action} ${this.currentHistoryIndex + 1} of ${this.history.length}`;
+        }
+    }
+
+    updateLockOption(lockOption, tableName) {
+        const isLocked = this.lockedTables.has(tableName);
+        lockOption.innerHTML = isLocked ? 
+            '<i class="fas fa-unlock mr-2"></i> Unlock Table' : 
+            '<i class="fas fa-lock mr-2"></i> Lock Table';
+        
+        lockOption.onclick = (e) => {
+            e.stopPropagation();
+            if (isLocked) {
+                this.lockedTables.delete(tableName);
+            } else {
+                this.lockedTables.add(tableName);
+            }
+            // Update lock icon
+            const lockIcon = document.getElementById(`lock-${tableName}`);
+            if (lockIcon) {
+                lockIcon.classList.toggle('hidden', !this.lockedTables.has(tableName));
+            }
+            // Update cursor style
+            const tableEl = document.getElementById(`table-${tableName}`);
+            if (tableEl) {
+                const header = tableEl.querySelector('.bg-gray-100');
+                if (header) {
+                    header.style.cursor = this.lockedTables.has(tableName) ? 'not-allowed' : 'move';
+                }
+            }
+            // Save locked state
+            this.storage.setItem('lockedTables', Array.from(this.lockedTables));
+            // Update the option text/icon
+            this.updateLockOption(lockOption, tableName);
+            // Hide dropdown
+            const dropdown = lockOption.closest('.absolute.left-0.mt-2');
+            if (dropdown) dropdown.classList.add('hidden');
+        };
     }
 }
 

@@ -6,6 +6,8 @@ An interactive database diagram tool for visualizing and managing SQL table rela
 
 ![chrome_jW4mrgPwWg](https://github.com/user-attachments/assets/46d44111-024b-434a-9fd3-c3be95af9114)
 
+![chrome_5zs4NwbvjD](https://github.com/user-attachments/assets/92be83dc-15f7-4264-98e0-59f9d62bde80)
+
 https://github.com/user-attachments/assets/20a4a891-7279-484e-a603-db7a930cd62a
 
 ## ✨ Features

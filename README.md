@@ -67,6 +67,7 @@ Table Users {
 Table Posts {
   id int [pk]
   user_id int [ref: > Users.id]
+  title varchar(100) [note: The title of the post]
   created_at timestamp
 }
 ```
